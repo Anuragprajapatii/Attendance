@@ -1,0 +1,1385 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>My Custom Timetable Calendar (Firebase)</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        /* Apply Inter font and antialiasing for better text rendering */
+        body {
+            font-family: 'Inter', sans-serif;
+            -webkit-font-smoothing: antialiased;
+            -moz-osx-font-smoothing: grayscale;
+        }
+        /* Custom modal overlay styling for a consistent look */
+        .modal-overlay {
+            background-color: rgba(0, 0, 0, 0.75);
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            padding: 1rem;
+            animation: fadeIn 0.3s ease-out; /* Smooth fade-in for the overlay */
+        }
+        .modal-content {
+            transform: translateY(0);
+            opacity: 1;
+            transition: all 0.3s ease-out; /* Smooth transition for modal content */
+        }
+        /* Keyframe animations for modals */
+        @keyframes fadeIn {
+            from { opacity: 0; }
+            to { opacity: 1; }
+        }
+        @keyframes slideUp {
+            from { transform: translateY(20px); opacity: 0; }
+            to { transform: translateY(0); opacity: 1; }
+        }
+        .modal-content {
+            animation: slideUp 0.3s ease-out; /* Slide up animation for modal content */
+        }
+        /* Custom styles for the toast notification container */
+        #toastContainer {
+            min-width: 250px;
+            max-width: 350px;
+            z-index: 1000; /* Ensure toast is on top of other elements */
+        }
+        .auth-screen {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(255, 255, 255, 0.9);
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            z-index: 1000;
+            text-align: center;
+            padding: 1rem;
+        }
+        .auth-form {
+            background-color: #ffffff;
+            padding: 2.5rem;
+            border-radius: 0.75rem;
+            box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05);
+            max-width: 400px;
+            width: 100%;
+        }
+    </style>
+</head>
+<body class="min-h-screen bg-gray-100 text-gray-900 p-4 sm:p-6">
+    <div id="authScreen" class="auth-screen">
+        <div class="auth-form">
+            <h2 class="text-3xl font-bold text-gray-800 mb-6">Sign In</h2>
+            <p class="text-lg text-gray-600 mb-8">Please sign in to access your personalized schedule.</p>
+
+            <div class="mb-4">
+                <label for="authEmail" class="sr-only">Email</label>
+                <input type="email" id="authEmail" placeholder="Email"
+                    class="w-full p-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-green-500" />
+            </div>
+            <div class="mb-6">
+                <label for="authPassword" class="sr-only">Password</label>
+                <input type="password" id="authPassword" placeholder="Password"
+                    class="w-full p-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-green-500" />
+            </div>
+
+            <button id="signInButton" class="bg-[#4CAF50] hover:bg-green-700 text-white font-bold py-3 px-6 rounded-lg shadow-xl text-lg w-full transition-all duration-200 ease-in-out transform hover:scale-105">
+                Sign In
+            </button>
+            <div id="loadingMessage" class="mt-8 text-xl text-gray-600 hidden">Loading your timetable...</div>
+        </div>
+    </div>
+
+    <div id="app" class="max-w-7xl mx-auto hidden">
+        </div>
+
+    <div id="toastContainer" class="fixed bottom-4 right-4 z-[100] space-y-2"></div>
+
+    <script type="module">
+        // --- Firebase Configuration and Imports ---
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/10.0.0/firebase-app.js";
+        import { getDatabase, ref, set, push, remove, onValue, off } from "https://www.gstatic.com/firebasejs/10.0.0/firebase-database.js";
+        import { getAuth, signInWithEmailAndPassword, signOut, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.0.0/firebase-auth.js";
+
+        // Your web app's Firebase configuration (provided by you)
+        const firebaseConfig = {
+            apiKey: "AIzaSyDjv2OsrUUVQKXvTqlQanhs17kbfxP3O2Y",
+            authDomain: "roomease-gjbss.firebaseapp.com",
+            databaseURL: "https://roomease-gjbss-default-rtdb.firebaseio.com",
+            projectId: "roomease-gjbss",
+            storageBucket: "roomease-gjbss.firebasestorage.app",
+            messagingSenderId: "777315688718",
+            appId: "1:777315688718:web:a332e72254a172319ef75f"
+        };
+
+        // Initialize Firebase
+        const app = initializeApp(firebaseConfig);
+        const database = getDatabase(app);
+        const auth = getAuth(app);
+
+        // --- Global Application State ---
+        let subjects = [];
+        let holidays = [];
+        let weeklySchedule = {};
+        let extraClasses = [];
+        let attendanceRecords = [];
+
+        let currentPage = 'calendar';
+        let currentUser = null;
+
+        // --- DOM Elements ---
+        const appDiv = document.getElementById('app');
+        const authScreen = document.getElementById('authScreen');
+        const authEmailInput = document.getElementById('authEmail');
+        const authPasswordInput = document.getElementById('authPassword');
+        const signInButton = document.getElementById('signInButton');
+        const loadingMessage = document.getElementById('loadingMessage');
+        const toastContainer = document.getElementById('toastContainer');
+
+        // --- Firebase CRUD Operations ---
+        async function addItemToFirebase(pathSuffix, item) {
+            if (!currentUser) {
+                showToast("Please sign in to add items.", "error");
+                return;
+            }
+            try {
+                const newRef = push(ref(database, `users/${currentUser.uid}/${pathSuffix}`));
+                await set(newRef, { ...item, id: newRef.key });
+                return newRef.key;
+            } catch (error) {
+                console.error(`Error adding item to ${pathSuffix}:`, error);
+                showToast(`Failed to add item. Error: ${error.message}`, "error");
+                throw error;
+            }
+        }
+
+        async function updateItemInFirebase(pathSuffix, itemId, updates) {
+            if (!currentUser) {
+                showToast("Please sign in to update items.", "error");
+                return;
+            }
+            try {
+                await set(ref(database, `users/${currentUser.uid}/${pathSuffix}/${itemId}`), updates);
+            } catch (error) {
+                console.error(`Error updating item in ${pathSuffix}:`, error);
+                showToast(`Failed to update item. Error: ${error.message}`, "error");
+                throw error;
+            }
+        }
+
+        async function deleteItemFromFirebase(pathSuffix, itemId) {
+            if (!currentUser) {
+                showToast("Please sign in to delete items.", "error");
+                return;
+            }
+            try {
+                await remove(ref(database, `users/${currentUser.uid}/${pathSuffix}/${itemId}`));
+            } catch (error) {
+                console.error(`Error deleting item from ${pathSuffix}:`, error);
+                showToast(`Failed to delete item. Error: ${error.message}`, "error");
+                throw error;
+            }
+        }
+
+        // --- Authentication Functions ---
+        signInButton.addEventListener('click', handleSignIn);
+
+        async function handleSignIn() {
+            const email = authEmailInput.value.trim();
+            const password = authPasswordInput.value.trim();
+
+            if (!email || !password) {
+                showToast("Please enter both email and password.", "error");
+                return;
+            }
+
+            loadingMessage.classList.remove('hidden');
+            signInButton.disabled = true;
+
+            try {
+                await signInWithEmailAndPassword(auth, email, password);
+                showToast("Signed in successfully!", "success");
+            } catch (error) {
+                console.error("Authentication error:", error);
+                let errorMessage = "An unknown error occurred.";
+                switch (error.code) {
+                    case 'auth/invalid-email':
+                        errorMessage = "Invalid email address format.";
+                        break;
+                    case 'auth/user-not-found':
+                    case 'auth/wrong-password':
+                        errorMessage = "Invalid email or password.";
+                        break;
+                    case 'auth/too-many-requests':
+                        errorMessage = "Too many failed login attempts. Please try again later.";
+                        break;
+                    default:
+                        errorMessage = `Authentication failed: ${error.message}`;
+                }
+                showToast(errorMessage, "error");
+            } finally {
+                loadingMessage.classList.add('hidden');
+                signInButton.disabled = false;
+            }
+        }
+
+        async function signOutUser() {
+            try {
+                if (currentUser && currentUser.uid) {
+                    off(ref(database, `users/${currentUser.uid}/subjects`));
+                    off(ref(database, `users/${currentUser.uid}/holidays`));
+                    off(ref(database, `users/${currentUser.uid}/weeklySchedule`));
+                    off(ref(database, `users/${currentUser.uid}/extraClasses`));
+                    off(ref(database, `users/${currentUser.uid}/attendanceRecords`));
+                }
+
+                await signOut(auth);
+                showToast("Signed out successfully!", "info");
+            } catch (error) {
+                console.error("Error signing out:", error);
+                showToast(`Sign-out failed: ${error.message}`, "error");
+            }
+        }
+
+        // --- Firebase Authentication State Observer ---
+        onAuthStateChanged(auth, (user) => {
+            if (user) {
+                currentUser = user;
+                authScreen.classList.add('hidden');
+                appDiv.classList.remove('hidden');
+                initializeFirebaseListeners();
+            } else {
+                currentUser = null;
+                appDiv.classList.add('hidden');
+                authScreen.classList.remove('hidden');
+                loadingMessage.classList.add('hidden');
+                signInButton.disabled = false;
+                authEmailInput.value = '';
+                authPasswordInput.value = '';
+
+                subjects = [];
+                holidays = [];
+                weeklySchedule = {};
+                extraClasses = [];
+                attendanceRecords = [];
+                renderApp();
+            }
+        });
+
+        // --- Firebase Data Listeners ---
+        let firebaseListenersInitialized = false;
+
+        function initializeFirebaseListeners() {
+            if (firebaseListenersInitialized && currentUser) {
+                return;
+            }
+
+            if (!currentUser) return;
+
+            console.log("Initializing Firebase listeners for user:", currentUser.uid);
+            loadingMessage.classList.remove('hidden');
+            signInButton.disabled = true;
+
+            subjects = [];
+            holidays = [];
+            weeklySchedule = {};
+            extraClasses = [];
+            attendanceRecords = [];
+
+            const listenerPromises = [];
+
+            listenerPromises.push(new Promise(resolve => {
+                onValue(ref(database, `users/${currentUser.uid}/subjects`), (snapshot) => {
+                    subjects = snapshot.val() ? Object.values(snapshot.val()) : [];
+                    renderApp();
+                    console.log("Subjects updated from Firebase:", subjects);
+                    resolve();
+                }, { onlyOnce: false });
+            }));
+
+            listenerPromises.push(new Promise(resolve => {
+                onValue(ref(database, `users/${currentUser.uid}/holidays`), (snapshot) => {
+                    holidays = snapshot.val() ? Object.values(snapshot.val()) : [];
+                    renderApp();
+                    console.log("Holidays updated from Firebase:", holidays);
+                    resolve();
+                }, { onlyOnce: false });
+            }));
+
+            listenerPromises.push(new Promise(resolve => {
+                onValue(ref(database, `users/${currentUser.uid}/weeklySchedule`), (snapshot) => {
+                    weeklySchedule = snapshot.val() || {};
+                    for (const day in weeklySchedule) {
+                        if (weeklySchedule.hasOwnProperty(day) && typeof weeklySchedule[day] === 'object' && weeklySchedule[day] !== null) {
+                            weeklySchedule[day] = Object.values(weeklySchedule[day]);
+                        }
+                    }
+                    renderApp();
+                    console.log("Weekly Schedule updated from Firebase:", weeklySchedule);
+                    resolve();
+                }, { onlyOnce: false });
+            }));
+
+            listenerPromises.push(new Promise(resolve => {
+                onValue(ref(database, `users/${currentUser.uid}/extraClasses`), (snapshot) => {
+                    extraClasses = snapshot.val() ? Object.values(snapshot.val()) : [];
+                    renderApp();
+                    console.log("Extra Classes updated from Firebase:", extraClasses);
+                    resolve();
+                }, { onlyOnce: false });
+            }));
+
+            listenerPromises.push(new Promise(resolve => {
+                onValue(ref(database, `users/${currentUser.uid}/attendanceRecords`), (snapshot) => {
+                    attendanceRecords = snapshot.val() ? Object.values(snapshot.val()) : [];
+                    renderApp();
+                    console.log("Attendance Records updated from Firebase:", attendanceRecords);
+                    resolve();
+                }, { onlyOnce: false });
+            }));
+
+            Promise.all(listenerPromises).then(() => {
+                loadingMessage.classList.add('hidden');
+                firebaseListenersInitialized = true;
+            }).catch(error => {
+                console.error("Error loading initial data:", error);
+                showToast("Failed to load your data. Please try again.", "error");
+                loadingMessage.classList.add('hidden');
+            });
+        }
+
+        // --- Toast Notification System (Unchanged) ---
+        function showToast(message, type = 'info') {
+            const toastContainer = document.getElementById('toastContainer');
+            if (!toastContainer) {
+                console.error("Toast container not found. Cannot display toast.");
+                return;
+            }
+
+            const toast = document.createElement('div');
+            toast.className = `p-3 rounded-lg shadow-md text-white flex items-center justify-between min-w-[250px] max-w-sm transition-all duration-300 ease-out transform translate-y-0 opacity-100`;
+
+            if (type === 'success') {
+                toast.classList.add('bg-green-500');
+            } else if (type === 'error') {
+                toast.classList.add('bg-red-500');
+            } else { // 'info' or default
+                toast.classList.add('bg-[#4CAF50]');
+            }
+
+            toast.innerHTML = `
+                <span>${message}</span>
+                <button class="ml-4 text-white hover:text-gray-100 opacity-75 hover:opacity-100 text-lg" onclick="this.closest('div').remove();" aria-label="Close toast">&times;</button>
+            `;
+
+            toastContainer.appendChild(toast);
+
+            setTimeout(() => {
+                toast.classList.add('opacity-0', 'translate-y-4');
+                toast.addEventListener('transitionend', () => toast.remove());
+            }, 5000);
+        }
+
+        // --- Utility Functions (Unchanged) ---
+        const calculateEndTime = (startTime) => {
+            if (!startTime) return '';
+            const [hours, minutes] = startTime.split(':').map(Number);
+            const tempDate = new Date();
+            tempDate.setHours(hours, minutes, 0, 0);
+            tempDate.setHours(tempDate.getHours() + 1);
+            const endHours = tempDate.getHours().toString().padStart(2, '0');
+            const endMinutes = tempDate.getMinutes().toString().padStart(2, '0');
+            return `${endHours}:${endMinutes}`;
+        };
+
+        const getSubjectName = (subjectId) => {
+            const subject = subjects.find(s => s.id === subjectId);
+            return subject ? subject.name : 'Unknown Subject';
+        };
+
+        const getDayName = (date) => {
+            const days = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+            return days[date.getDay()];
+        };
+
+        const getAttendanceStatus = (subjectId, dateString, startTime) => {
+            return attendanceRecords.find(rec =>
+                rec.subjectId === subjectId &&
+                rec.date === dateString &&
+                rec.startTime === startTime
+            )?.status || 'unmarked';
+        };
+
+        const calculatePercentage = (attended, total) => {
+            if (total === 0) return '0.00%';
+            return ((attended / total) * 100).toFixed(2) + '%';
+        };
+
+        // --- Modals (Unchanged) ---
+        let currentModal = null;
+
+        function openModal(title, contentElement, onCloseCallback = () => {}) {
+            closeModal();
+
+            const modalOverlay = document.createElement('div');
+            modalOverlay.className = 'modal-overlay fixed inset-0 z-50';
+            modalOverlay.setAttribute('aria-modal', 'true');
+            modalOverlay.setAttribute('role', 'dialog');
+
+            const modalContent = document.createElement('div');
+            modalContent.className = 'modal-content bg-white p-6 rounded-lg shadow-xl max-w-lg w-full relative';
+            modalContent.onclick = (e) => e.stopPropagation();
+
+            const modalHeader = document.createElement('div');
+            modalHeader.className = 'flex justify-between items-center mb-4';
+            modalHeader.innerHTML = `<h2 class="text-xl font-semibold text-gray-800">${title}</h2>`;
+
+            const closeButton = document.createElement('button');
+            closeButton.className = 'text-gray-500 hover:text-gray-700 text-2xl font-bold p-1 rounded-full hover:bg-gray-100 transition-colors';
+            closeButton.innerHTML = '&times;';
+            closeButton.setAttribute('aria-label', 'Close modal');
+            closeButton.onclick = () => {
+                closeModal();
+                onCloseCallback();
+            };
+
+            modalHeader.appendChild(closeButton);
+            modalContent.appendChild(modalHeader);
+            modalContent.appendChild(contentElement);
+            modalOverlay.appendChild(modalContent);
+            document.body.appendChild(modalOverlay);
+
+            currentModal = modalOverlay;
+
+            document.addEventListener('keydown', handleEscapeKey);
+        }
+
+        function closeModal() {
+            if (currentModal) {
+                document.body.removeChild(currentModal);
+                currentModal = null;
+                document.removeEventListener('keydown', handleEscapeKey);
+            }
+        }
+
+        function handleEscapeKey(event) {
+            if (event.key === 'Escape') {
+                closeModal();
+            }
+        }
+
+        function openConfirmModal(message, onConfirmCallback) {
+            const confirmContent = document.createElement('div');
+            confirmContent.className = 'text-center';
+            confirmContent.innerHTML = `
+                <p class="mb-6 text-gray-700 text-lg">${message}</p>
+                <div class="flex justify-center gap-4 mt-6">
+                    <button id="cancelConfirmBtn" class="bg-gray-300 hover:bg-gray-400 text-gray-800 font-bold py-2 px-4 rounded-lg shadow-sm transition-colors">
+                        Cancel
+                    </button>
+                    <button id="executeConfirmBtn" class="bg-red-600 hover:bg-red-700 text-white font-bold py-2 px-4 rounded-lg shadow transition-colors">
+                        Confirm
+                    </button>
+                </div>
+            `;
+            openModal('Confirm Action', confirmContent);
+
+            document.getElementById('cancelConfirmBtn').onclick = closeModal;
+            document.getElementById('executeConfirmBtn').onclick = () => {
+                onConfirmCallback();
+                closeModal();
+            };
+        }
+
+
+        // --- Render Functions (UI Components) ---
+
+        /**
+         * Renders the main application structure including header, navigation, and current page content.
+         * This function now checks for `currentUser` and also adds a sign-out button.
+         */
+        function renderApp() {
+            if (!currentUser) {
+                // If no user, ensure the app content is hidden
+                appDiv.classList.add('hidden');
+                authScreen.classList.remove('hidden');
+                return;
+            }
+
+            // Ensure the main app content is visible
+            appDiv.classList.remove('hidden');
+            authScreen.classList.add('hidden');
+
+            // Only clear and re-render if the main structure isn't already there (or if the user changes)
+            let headerElement = appDiv.querySelector('header');
+            if (!headerElement || headerElement.dataset.userId !== currentUser.uid) {
+                appDiv.innerHTML = ''; // Clear initial loading message or old user's content
+
+                const header = document.createElement('header');
+                header.className = 'bg-[#4CAF50] text-white p-4 rounded-lg shadow-md mb-6 flex flex-col md:flex-row justify-between items-center flex-wrap';
+                header.dataset.userId = currentUser.uid; // Store user ID to check if header belongs to current user
+                header.innerHTML = `
+                    <h1 class="text-2xl sm:text-3xl font-bold mb-2 md:mb-0 text-center md:text-left w-full md:w-auto">My Custom Timetable</h1>
+                    <div class="flex items-center gap-3 mt-2 md:mt-0">
+                        <span class="text-xs sm:text-sm bg-green-700 rounded-full px-3 py-1 opacity-90 break-all">
+                            Signed in as: ${currentUser.email}
+                        </span>
+                        <button id="signOutButton" class="bg-red-500 hover:bg-red-600 text-white font-bold py-1.5 px-3 rounded-lg shadow-sm text-sm transition-colors">Sign Out</button>
+                    </div>
+                `;
+                appDiv.appendChild(header);
+
+                // Add event listener for sign out button
+                header.querySelector('#signOutButton').addEventListener('click', signOutUser);
+
+                const nav = document.createElement('nav');
+                nav.className = 'bg-white p-3 rounded-lg shadow-md mb-6 flex flex-wrap justify-center gap-2 sm:gap-3';
+                nav.innerHTML = `
+                    <button data-page="calendar" class="py-2 px-3 sm:px-4 rounded-lg font-medium text-sm sm:text-base transition-colors">Calendar</button>
+                    <button data-page="subjects" class="py-2 px-3 sm:px-4 rounded-lg font-medium text-sm sm:text-base transition-colors">Subjects</button>
+                    <button data-page="weekly-schedule" class="py-2 px-3 sm:px-4 rounded-lg font-medium text-sm sm:text-base transition-colors">Weekly Schedule</button>
+                    <button data-page="holidays" class="py-2 px-3 sm:px-4 rounded-lg font-medium text-sm sm:text-base transition-colors">Holidays</button>
+                    <button data-page="extra-classes" class="py-2 px-3 sm:px-4 rounded-lg font-medium text-sm sm:text-base transition-colors">Extra Classes</button>
+                `;
+                appDiv.appendChild(nav);
+
+                nav.querySelectorAll('button').forEach(button => {
+                    button.addEventListener('click', (e) => {
+                        currentPage = e.target.dataset.page;
+                        renderCurrentPage();
+                    });
+                });
+
+                const main = document.createElement('main');
+                main.id = 'main-content';
+                appDiv.appendChild(main);
+            }
+
+            // Always re-render the current page's content as data might have changed
+            renderCurrentPage();
+        }
+
+        /**
+         * Renders the content of the currently selected page based on `currentPage` state.
+         * Updates navigation button styles to reflect the active page.
+         */
+        function renderCurrentPage() {
+            const mainContentDiv = document.getElementById('main-content');
+            if (!mainContentDiv) return;
+
+            mainContentDiv.innerHTML = '';
+
+            document.querySelectorAll('nav button').forEach(button => {
+                if (button.dataset.page === currentPage) {
+                    button.classList.add('bg-[#4CAF50]', 'text-white', 'shadow');
+                    button.classList.remove('bg-gray-200', 'text-gray-700', 'hover:bg-gray-300');
+                } else {
+                    button.classList.remove('bg-[#4CAF50]', 'text-white', 'shadow');
+                    button.classList.add('bg-gray-200', 'text-gray-700', 'hover:bg-gray-300');
+                }
+            });
+
+            switch (currentPage) {
+                case 'subjects':
+                    renderSubjectManager(mainContentDiv);
+                    break;
+                case 'weekly-schedule':
+                    renderWeeklyScheduleManager(mainContentDiv);
+                    break;
+                case 'holidays':
+                    renderHolidayManager(mainContentDiv);
+                    break;
+                case 'extra-classes':
+                    renderExtraClassManager(mainContentDiv);
+                    break;
+                case 'calendar':
+                default:
+                    renderCalendar(mainContentDiv);
+                    break;
+            }
+        }
+
+
+        // --- Subject Manager Component ---
+        function renderSubjectManager(parentDiv) {
+            const container = document.createElement('div');
+            container.className = 'p-6 bg-white rounded-lg shadow-md max-w-3xl mx-auto';
+            parentDiv.appendChild(container);
+
+            container.innerHTML = `
+                <h2 class="text-2xl font-bold mb-6 text-gray-800">Manage Subjects</h2>
+                <button id="addSubjectBtn" class="bg-[#4CAF50] hover:bg-green-700 text-white font-bold py-2 px-4 rounded-lg flex items-center justify-center mb-6 shadow-lg transition-all duration-200 ease-in-out hover:scale-105">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" class="lucide lucide-plus"><path d="M12 5V19" /><path d="M5 12H19" /></svg> <span class="ml-2">Add New Subject</span>
+                </button>
+                <div id="subjectsList" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4"></div>
+            `;
+
+            const subjectsListDiv = container.querySelector('#subjectsList');
+            const addSubjectBtn = container.querySelector('#addSubjectBtn');
+
+            addSubjectBtn.addEventListener('click', () => openAddEditSubjectModal());
+
+            function updateSubjectsList() {
+                if (subjects.length === 0) {
+                    subjectsListDiv.innerHTML = '<p class="text-gray-600 col-span-full">No subjects added yet. Add your first subject!</p>';
+                    return;
+                }
+
+                subjectsListDiv.innerHTML = '';
+                subjects.forEach(subject => {
+                    const recordsForSubject = attendanceRecords.filter(rec => rec.subjectId === subject.id);
+                    const totalClasses = recordsForSubject.filter(rec => rec.status === 'present' || rec.status === 'absent').length;
+                    const attendedClasses = recordsForSubject.filter(rec => rec.status === 'present').length;
+
+                    const subjectDiv = document.createElement('div');
+                    subjectDiv.className = 'bg-gray-50 p-4 rounded-lg shadow-sm border border-gray-200';
+                    subjectDiv.innerHTML = `
+                        <div class="flex justify-between items-center mb-2">
+                            <h3 class="text-lg font-semibold text-gray-900">${subject.name}</h3>
+                            <div class="flex space-x-2">
+                                <button data-id="${subject.id}" class="edit-subject-btn text-green-500 hover:text-green-700 p-1 rounded-full hover:bg-gray-200 transition-colors" title="Edit Subject">
+                                    <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" class="lucide lucide-edit"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" /><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4Z" /></svg>
+                                </button>
+                                <button data-id="${subject.id}" class="delete-subject-btn text-red-500 hover:text-red-700 p-1 rounded-full hover:bg-gray-200 transition-colors" title="Delete Subject">
+                                    <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" class="lucide lucide-trash"><path d="M3 6h18" /><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6" /><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2" /></svg>
+                                </button>
+                            </div>
+                        </div>
+                        <p class="text-sm text-gray-600">Total Classes: <span class="font-medium">${totalClasses}</span></p>
+                        <p class="text-sm text-gray-600">Attended: <span class="font-medium">${attendedClasses}</span></p>
+                        <p class="text-md font-bold mt-2 text-gray-700">Attendance: ${calculatePercentage(attendedClasses, totalClasses)}</p>
+                    `;
+                    subjectsListDiv.appendChild(subjectDiv);
+                });
+
+                subjectsListDiv.querySelectorAll('.edit-subject-btn').forEach(btn => {
+                    btn.addEventListener('click', (e) => {
+                        const subjectId = e.currentTarget.dataset.id;
+                        const subjectToEdit = subjects.find(s => s.id === subjectId);
+                        if (subjectToEdit) openAddEditSubjectModal(subjectToEdit);
+                    });
+                });
+                subjectsListDiv.querySelectorAll('.delete-subject-btn').forEach(btn => {
+                    btn.addEventListener('click', (e) => {
+                        const subjectId = e.currentTarget.dataset.id;
+                        const subjectToDelete = subjects.find(s => s.id === subjectId);
+                        if (subjectToDelete) {
+                            openConfirmModal(`Are you sure you want to delete the subject "${subjectToDelete.name}"? All associated attendance records and schedule entries will also be deleted.`,
+                                () => deleteSubject(subjectToDelete.id)
+                            );
+                        }
+                    });
+                });
+            }
+
+            updateSubjectsList();
+
+            async function openAddEditSubjectModal(subject = null) {
+                const modalContent = document.createElement('div');
+                modalContent.innerHTML = `
+                    <input type="text" id="subjectNameInput" placeholder="Subject Name"
+                        value="${subject ? subject.name : ''}"
+                        class="w-full p-3 border border-gray-300 rounded-lg mb-4 focus:outline-none focus:ring-2 focus:ring-green-500" />
+                    <button id="saveSubjectBtn" class="bg-green-600 hover:bg-green-700 text-white font-bold py-2 px-4 rounded-lg w-full shadow transition-all duration-200 ease-in-out hover:scale-105">
+                        ${subject ? 'Update Subject' : 'Add Subject'}
+                    </button>
+                `;
+                openModal(subject ? 'Edit Subject' : 'Add New Subject', modalContent);
+
+                document.getElementById('saveSubjectBtn').addEventListener('click', async () => {
+                    const subjectName = document.getElementById('subjectNameInput').value.trim();
+                    if (!subjectName) {
+                        showToast("Subject name cannot be empty.", "error");
+                        return;
+                    }
+
+                    try {
+                        if (subject) {
+                            await updateItemInFirebase('subjects', subject.id, { ...subject, name: subjectName });
+                            showToast("Subject updated successfully!", "success");
+                        } else {
+                            await addItemToFirebase('subjects', { name: subjectName, createdAt: new Date().toISOString() });
+                            showToast("Subject added successfully!", "success");
+                        }
+                        closeModal();
+                    } catch (error) {
+                        // Toast handled by addItemToFirebase/updateItemInFirebase
+                    }
+                });
+            }
+
+            async function deleteSubject(id) {
+                try {
+                    // Delete subject
+                    await deleteItemFromFirebase('subjects', id);
+
+                    // Delete associated attendance records
+                    attendanceRecords.filter(rec => rec.subjectId === id).forEach(async (rec) => {
+                        await deleteItemFromFirebase('attendanceRecords', rec.id);
+                    });
+
+                    // Delete associated weekly schedule entries
+                    for (const day in weeklySchedule) {
+                        if (weeklySchedule.hasOwnProperty(day)) {
+                            weeklySchedule[day].filter(classItem => classItem.subjectId === id).forEach(async (classItem) => {
+                                await deleteItemFromFirebase(`weeklySchedule/${day}`, classItem.id);
+                            });
+                        }
+                    }
+
+                    // Delete associated extra class entries
+                    extraClasses.filter(ec => ec.subjectId === id).forEach(async (ec) => {
+                        await deleteItemFromFirebase('extraClasses', ec.id);
+                    });
+
+                    showToast("Subject and associated records deleted successfully!", "success");
+                } catch (error) {
+                    // Toast handled by deleteItemFromFirebase
+                }
+            }
+        }
+
+
+        // --- Holiday Manager Component ---
+        function renderHolidayManager(parentDiv) {
+            const container = document.createElement('div');
+            container.className = 'p-6 bg-white rounded-lg shadow-md max-w-3xl mx-auto';
+            parentDiv.appendChild(container);
+
+            container.innerHTML = `
+                <h2 class="text-2xl font-bold mb-6 text-gray-800">Manage Holidays</h2>
+                <button id="addHolidayBtn" class="bg-[#4CAF50] hover:bg-green-700 text-white font-bold py-2 px-4 rounded-lg flex items-center justify-center mb-6 shadow-lg transition-all duration-200 ease-in-out hover:scale-105">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" class="lucide lucide-plus"><path d="M12 5V19" /><path d="M5 12H19" /></svg> <span class="ml-2">Add New Holiday</span>
+                </button>
+                <div id="holidaysList" class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4"></div>
+            `;
+
+            const holidaysListDiv = container.querySelector('#holidaysList');
+            const addHolidayBtn = container.querySelector('#addHolidayBtn');
+
+            addHolidayBtn.addEventListener('click', () => openAddHolidayModal());
+
+            function updateHolidaysList() {
+                if (holidays.length === 0) {
+                    holidaysListDiv.innerHTML = '<p class="text-gray-600 col-span-full">No holidays added yet. Add your first holiday!</p>';
+                    return;
+                }
+
+                holidaysListDiv.innerHTML = '';
+                holidays.sort((a, b) => new Date(a.date) - new Date(b.date));
+                holidays.forEach(holiday => {
+                    const holidayDiv = document.createElement('div');
+                    holidayDiv.className = 'bg-gray-50 p-4 rounded-lg shadow-sm border border-gray-200 flex justify-between items-center';
+                    holidayDiv.innerHTML = `
+                        <div>
+                            <h3 class="text-lg font-semibold text-gray-900">${holiday.name}</h3>
+                            <p class="text-sm text-gray-600">${holiday.date}</p>
+                        </div>
+                        <button data-id="${holiday.id}" class="delete-holiday-btn text-red-500 hover:text-red-700 p-1 rounded-full hover:bg-gray-200 transition-colors" title="Delete Holiday">
+                                <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" class="lucide lucide-trash"><path d="M3 6h18" /><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6" /><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2" /></svg>
+                        </button>
+                    `;
+                    holidaysListDiv.appendChild(holidayDiv);
+                });
+
+                holidaysListDiv.querySelectorAll('.delete-holiday-btn').forEach(btn => {
+                    btn.addEventListener('click', (e) => {
+                        const holidayId = e.currentTarget.dataset.id;
+                        const holidayToDelete = holidays.find(h => h.id === holidayId);
+                        if (holidayToDelete) {
+                            openConfirmModal(`Are you sure you want to delete the holiday "${holidayToDelete.name}" on ${holidayToDelete.date}?`,
+                                () => deleteHoliday(holidayToDelete.id)
+                            );
+                        }
+                    });
+                });
+            }
+
+            updateHolidaysList();
+
+            async function openAddHolidayModal() {
+                const modalContent = document.createElement('div');
+                modalContent.innerHTML = `
+                    <input type="text" id="holidayNameInput" placeholder="Holiday Name"
+                        class="w-full p-3 border border-gray-300 rounded-lg mb-4 focus:outline-none focus:ring-2 focus:ring-green-500" />
+                    <input type="date" id="holidayDateInput"
+                        class="w-full p-3 border border-gray-300 rounded-lg mb-4 focus:outline-none focus:ring-2 focus:ring-green-500" />
+                    <button id="addHolidaySaveBtn" class="bg-green-600 hover:bg-green-700 text-white font-bold py-2 px-4 rounded-lg w-full shadow transition-all duration-200 ease-in-out hover:scale-105">
+                        Add Holiday
+                    </button>
+                `;
+                openModal('Add New Holiday', modalContent);
+
+                document.getElementById('addHolidaySaveBtn').addEventListener('click', async () => {
+                    const name = document.getElementById('holidayNameInput').value.trim();
+                    const date = document.getElementById('holidayDateInput').value;
+                    if (!name || !date) {
+                        showToast("Please fill in both holiday name and date.", "error");
+                        return;
+                    }
+
+                    try {
+                        await addItemToFirebase('holidays', { name, date, createdAt: new Date().toISOString() });
+                        showToast("Holiday added successfully!", "success");
+                        closeModal();
+                    } catch (error) {
+                        // Toast handled by addItemToFirebase
+                    }
+                });
+            }
+
+            async function deleteHoliday(id) {
+                try {
+                    await deleteItemFromFirebase('holidays', id);
+                    showToast("Holiday deleted successfully!", "success");
+                } catch (error) {
+                    // Toast handled by deleteItemFromFirebase
+                }
+            }
+        }
+
+
+        // --- Weekly Schedule Manager Component ---
+        function renderWeeklyScheduleManager(parentDiv) {
+            const daysOfWeek = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
+            let selectedDay = 'Monday';
+
+            const container = document.createElement('div');
+            container.className = 'p-6 bg-white rounded-lg shadow-md max-w-4xl mx-auto';
+            parentDiv.appendChild(container);
+
+            container.innerHTML = `
+                <h2 class="text-2xl font-bold mb-6 text-gray-800">Manage Weekly Schedule</h2>
+                <div id="daySelectionButtons" class="flex flex-wrap gap-2 mb-6"></div>
+                <button id="addClassBtn" class="bg-[#4CAF50] hover:bg-green-700 text-white font-bold py-2 px-4 rounded-lg flex items-center justify-center mb-6 shadow-lg transition-all duration-200 ease-in-out hover:scale-105">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" class="lucide lucide-plus"><path d="M12 5V19" /><path d="M5 12H19" /></svg> <span class="ml-2">Add Class for ${selectedDay}</span>
+                </button>
+                <h3 id="scheduleForDayHeader" class="text-xl font-semibold mb-4 text-gray-800">Schedule for ${selectedDay}</h3>
+                <div id="classesList" class="space-y-3"></div>
+            `;
+
+            const daySelectionButtonsDiv = container.querySelector('#daySelectionButtons');
+            const addClassBtn = container.querySelector('#addClassBtn');
+            const scheduleForDayHeader = container.querySelector('#scheduleForDayHeader');
+            const classesListDiv = container.querySelector('#classesList');
+
+            daysOfWeek.forEach(day => {
+                const button = document.createElement('button');
+                button.dataset.day = day;
+                button.className = `py-2 px-4 rounded-lg font-medium transition-colors ${selectedDay === day ? 'bg-[#4CAF50] text-white shadow' : 'bg-gray-200 text-gray-700 hover:bg-gray-300'}`;
+                button.textContent = day;
+                button.addEventListener('click', () => {
+                    selectedDay = day;
+                    updateDaySelectionButtons();
+                    updateClassesList();
+                });
+                daySelectionButtonsDiv.appendChild(button);
+            });
+
+            function updateDaySelectionButtons() {
+                daySelectionButtonsDiv.querySelectorAll('button').forEach(button => {
+                    if (button.dataset.day === selectedDay) {
+                        button.classList.add('bg-[#4CAF50]', 'text-white', 'shadow');
+                        button.classList.remove('bg-gray-200', 'text-gray-700', 'hover:bg-gray-300');
+                    } else {
+                        button.classList.remove('bg-[#4CAF50]', 'text-white', 'shadow');
+                        button.classList.add('bg-gray-200', 'text-gray-700', 'hover:bg-gray-300');
+                    }
+                });
+                addClassBtn.querySelector('span').textContent = `Add Class for ${selectedDay}`;
+                scheduleForDayHeader.textContent = `Schedule for ${selectedDay}`;
+            }
+
+            addClassBtn.addEventListener('click', () => openAddClassModal());
+
+            function updateClassesList() {
+                const classesForSelectedDay = weeklySchedule[selectedDay] || [];
+                if (classesForSelectedDay.length === 0) {
+                    classesListDiv.innerHTML = `<p class="text-gray-600">No classes scheduled for ${selectedDay}.</p>`;
+                    return;
+                }
+
+                classesListDiv.innerHTML = '';
+                classesForSelectedDay.sort((a, b) => a.startTime.localeCompare(b.startTime));
+                classesForSelectedDay.forEach(classItem => {
+                    const classDiv = document.createElement('div');
+                    classDiv.className = 'bg-gray-50 p-4 rounded-lg shadow-sm border border-gray-200 flex justify-between items-center';
+                    classDiv.innerHTML = `
+                        <div>
+                            <p class="text-lg font-semibold text-gray-900">${getSubjectName(classItem.subjectId)}</p>
+                            <p class="text-sm text-gray-600">${classItem.startTime} - ${calculateEndTime(classItem.startTime)}</p>
+                        </div>
+                        <button data-id="${classItem.id}" class="delete-class-btn text-red-500 hover:text-red-700 p-1 rounded-full hover:bg-gray-200 transition-colors" title="Delete Class">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" class="lucide lucide-trash"><path d="M3 6h18" /><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6" /><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2" /></svg>
+                        </button>
+                    `;
+                    classesListDiv.appendChild(classDiv);
+                });
+
+                classesListDiv.querySelectorAll('.delete-class-btn').forEach(btn => {
+                    btn.addEventListener('click', (e) => {
+                        const classId = e.currentTarget.dataset.id;
+                        const classToDelete = classesForSelectedDay.find(c => c.id === classId);
+                        if (classToDelete) {
+                            openConfirmModal(`Are you sure you want to delete this class from ${selectedDay}'s schedule?`,
+                                () => deleteClassFromSchedule(classToDelete.id, selectedDay)
+                            );
+                        }
+                    });
+                });
+            }
+
+            updateClassesList();
+
+            async function openAddClassModal() {
+                const modalContent = document.createElement('div');
+                let subjectOptions = '<option value="">Select Subject</option>';
+                subjects.forEach(sub => {
+                    subjectOptions += `<option value="${sub.id}">${sub.name}</option>`;
+                });
+
+                modalContent.innerHTML = `
+                    <select id="newClassSubjectId" class="w-full p-3 border border-gray-300 rounded-lg mb-4 focus:outline-none focus:ring-2 focus:ring-green-500">
+                        ${subjectOptions}
+                    </select>
+                    <input type="time" id="newClassStartTime"
+                        class="w-full p-3 border border-gray-300 rounded-lg mb-4 focus:outline-none focus:ring-2 focus:ring-green-500" />
+                    <button id="addClassSaveBtn" class="bg-green-600 hover:bg-green-700 text-white font-bold py-2 px-4 rounded-lg w-full shadow transition-all duration-200 ease-in-out hover:scale-105">
+                        Add Class
+                    </button>
+                `;
+                openModal(`Add Class for ${selectedDay}`, modalContent);
+
+                document.getElementById('addClassSaveBtn').addEventListener('click', async () => {
+                    const subjectId = document.getElementById('newClassSubjectId').value;
+                    const startTime = document.getElementById('newClassStartTime').value;
+
+                    if (!subjectId || !startTime) {
+                        showToast("Please select a subject and enter a start time.", "error");
+                        return;
+                    }
+                    if (!/^\d{2}:\d{2}$/.test(startTime)) {
+                        showToast("Please enter a valid start time (HH:MM).", "error");
+                        return;
+                    }
+
+                    try {
+                        await addItemToFirebase(`weeklySchedule/${selectedDay}`, { subjectId, startTime, createdAt: new Date().toISOString() });
+                        showToast("Class added successfully!", "success");
+                        closeModal();
+                    } catch (error) {
+                        // Toast handled by addItemToFirebase
+                    }
+                });
+            }
+
+            async function deleteClassFromSchedule(id, dayOfWeek) {
+                try {
+                    await deleteItemFromFirebase(`weeklySchedule/${dayOfWeek}`, id);
+                    showToast("Class deleted successfully!", "success");
+                }
+                catch (error) {
+                    // Toast handled by deleteItemFromFirebase
+                }
+            }
+        }
+
+
+        // --- Extra Class Manager Component ---
+        function renderExtraClassManager(parentDiv) {
+            const container = document.createElement('div');
+            container.className = 'p-6 bg-white rounded-lg shadow-md max-w-3xl mx-auto';
+            parentDiv.appendChild(container);
+
+            container.innerHTML = `
+                <h2 class="text-2xl font-bold mb-6 text-gray-800">Manage Extra Classes</h2>
+                <button id="addExtraClassBtn" class="bg-[#4CAF50] hover:bg-green-700 text-white font-bold py-2 px-4 rounded-lg flex items-center justify-center mb-6 shadow-lg transition-all duration-200 ease-in-out hover:scale-105">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" class="lucide lucide-plus"><path d="M12 5V19" /><path d="M5 12H19" /></svg> <span class="ml-2">Add New Extra Class</span>
+                </button>
+                <div id="extraClassesList" class="space-y-3"></div>
+            `;
+
+            const extraClassesListDiv = container.querySelector('#extraClassesList');
+            const addExtraClassBtn = container.querySelector('#addExtraClassBtn');
+
+            addExtraClassBtn.addEventListener('click', () => openAddExtraClassModal());
+
+            function updateExtraClassesList() {
+                if (extraClasses.length === 0) {
+                    extraClassesListDiv.innerHTML = '<p class="text-gray-600">No extra classes added yet.</p>';
+                    return;
+                }
+
+                extraClassesListDiv.innerHTML = '';
+                extraClasses.sort((a, b) => new Date(a.date) - new Date(b.date));
+                extraClasses.forEach(ec => {
+                    const ecDiv = document.createElement('div');
+                    ecDiv.className = 'bg-gray-50 p-4 rounded-lg shadow-sm border border-gray-200 flex justify-between items-center';
+                    ecDiv.innerHTML = `
+                        <div>
+                            <p class="text-lg font-semibold text-gray-900">${getSubjectName(ec.subjectId)}</p>
+                            <p class="text-sm text-gray-600">${ec.date} (${ec.startTime} - ${calculateEndTime(ec.startTime)})</p>
+                        </div>
+                        <button data-id="${ec.id}" class="delete-extra-class-btn text-red-500 hover:text-red-700 p-1 rounded-full hover:bg-gray-200 transition-colors" title="Delete Extra Class">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" class="lucide lucide-trash"><path d="M3 6h18" /><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6" /><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2" /></svg>
+                        </button>
+                    `;
+                    extraClassesListDiv.appendChild(ecDiv);
+                });
+
+                extraClassesListDiv.querySelectorAll('.delete-extra-class-btn').forEach(btn => {
+                    btn.addEventListener('click', (e) => {
+                        const ecId = e.currentTarget.dataset.id;
+                        const ecToDelete = extraClasses.find(ec => ec.id === ecId);
+                        if (ecToDelete) {
+                            openConfirmModal(`Are you sure you want to delete this extra class on ${ecToDelete.date} for ${getSubjectName(ecToDelete.subjectId)}?`,
+                                () => deleteExtraClass(ecToDelete.id)
+                            );
+                        }
+                    });
+                });
+            }
+
+            updateExtraClassesList();
+
+            async function openAddExtraClassModal() {
+                const modalContent = document.createElement('div');
+                let subjectOptions = '<option value="">Select Subject</option>';
+                subjects.forEach(sub => {
+                    subjectOptions += `<option value="${sub.id}">${sub.name}</option>`;
+                });
+
+                modalContent.innerHTML = `
+                    <input type="date" id="newExtraClassDate"
+                        class="w-full p-3 border border-gray-300 rounded-lg mb-4 focus:outline-none focus:ring-2 focus:ring-green-500" />
+                    <select id="newExtraClassSubjectId" class="w-full p-3 border border-gray-300 rounded-lg mb-4 focus:outline-none focus:ring-2 focus:ring-green-500">
+                        ${subjectOptions}
+                    </select>
+                    <input type="time" id="newExtraClassStartTime"
+                        class="w-full p-3 border border-gray-300 rounded-lg mb-4 focus:outline-none focus:ring-2 focus:ring-green-500" />
+                    <button id="addExtraClassSaveBtn" class="bg-green-600 hover:bg-green-700 text-white font-bold py-2 px-4 rounded-lg w-full shadow transition-all duration-200 ease-in-out hover:scale-105">
+                        Add Extra Class
+                    </button>
+                `;
+                openModal('Add New Extra Class', modalContent);
+
+                document.getElementById('addExtraClassSaveBtn').addEventListener('click', async () => {
+                    const date = document.getElementById('newExtraClassDate').value;
+                    const subjectId = document.getElementById('newExtraClassSubjectId').value;
+                    const startTime = document.getElementById('newExtraClassStartTime').value;
+
+                    if (!date || !subjectId || !startTime) {
+                        showToast("Please fill in all fields for the extra class.", "error");
+                        return;
+                    }
+                    if (!/^\d{2}:\d{2}$/.test(startTime)) {
+                        showToast("Please enter a valid start time (HH:MM).", "error");
+                        return;
+                    }
+
+                    try {
+                        await addItemToFirebase('extraClasses', { date, subjectId, startTime, createdAt: new Date().toISOString() });
+                        showToast("Extra class added successfully!", "success");
+                        closeModal();
+                    } catch (error) {
+                        // Toast handled by addItemToFirebase
+                    }
+                });
+            }
+
+            async function deleteExtraClass(id) {
+                try {
+                    await deleteItemFromFirebase('extraClasses', id);
+                    showToast("Extra class deleted successfully!", "success");
+                } catch (error) {
+                    // Toast handled by deleteItemFromFirebase
+                }
+            }
+        }
+
+
+        // --- Calendar Component ---
+        function renderCalendar(parentDiv) {
+            let currentMonth = new Date();
+
+            const container = document.createElement('div');
+            container.className = 'p-6 bg-white rounded-lg shadow-md max-w-5xl mx-auto';
+            parentDiv.appendChild(container);
+
+            container.innerHTML = `
+                <h2 class="text-2xl font-bold mb-6 text-gray-800">Your Timetable Calendar</h2>
+                <div class="flex justify-between items-center mb-6 bg-gray-100 p-4 rounded-lg shadow-sm">
+                    <button id="prevMonthBtn" class="bg-[#4CAF50] hover:bg-green-700 text-white font-bold py-2 px-4 rounded-lg shadow transition-all duration-200 ease-in-out hover:scale-105">Previous</button>
+                    <h3 id="currentMonthDisplay" class="text-xl font-bold text-gray-800"></h3>
+                    <button id="nextMonthBtn" class="bg-[#4CAF50] hover:bg-green-700 text-white font-bold py-2 px-4 rounded-lg shadow transition-all duration-200 ease-in-out hover:scale-105">Next</button>
+                </div>
+                <div class="grid grid-cols-7 text-center font-semibold text-gray-700 mb-2">
+                    <div>Mon</div><div>Tue</div><div>Wed</div><div>Thu</div><div>Fri</div><div>Sat</div><div>Sun</div>
+                </div>
+                <div id="calendarGrid" class="grid grid-cols-7 gap-1"></div>
+            `;
+
+            const currentMonthDisplay = container.querySelector('#currentMonthDisplay');
+            const prevMonthBtn = container.querySelector('#prevMonthBtn');
+            const nextMonthBtn = container.querySelector('#nextMonthBtn');
+            const calendarGrid = container.querySelector('#calendarGrid');
+
+            prevMonthBtn.addEventListener('click', () => {
+                currentMonth.setMonth(currentMonth.getMonth() - 1);
+                updateCalendar();
+            });
+            nextMonthBtn.addEventListener('click', () => {
+                currentMonth.setMonth(currentMonth.getMonth() + 1);
+                updateCalendar();
+            });
+
+            function getDaysInMonth(year, month) {
+                return new Date(year, month + 1, 0).getDate();
+            }
+
+            function getFirstDayOfMonth(year, month) {
+                // Adjust getDay() to make Monday=0, Sunday=6
+                const day = new Date(year, month, 1).getDay();
+                return (day === 0) ? 6 : day - 1; // Convert Sunday(0) to 6, Monday(1) to 0, etc.
+            }
+
+            function updateCalendar() {
+                const year = currentMonth.getFullYear();
+                const month = currentMonth.getMonth();
+                const numDays = getDaysInMonth(year, month);
+                const firstDayIndex = getFirstDayOfMonth(year, month); // 0 for Monday, ..., 6 for Sunday
+
+                currentMonthDisplay.textContent = currentMonth.toLocaleString('default', { month: 'long', year: 'numeric' });
+                calendarGrid.innerHTML = '';
+
+                // Add empty cells for days before the first day of the month
+                for (let i = 0; i < firstDayIndex; i++) {
+                    const emptyCell = document.createElement('div');
+                    emptyCell.className = 'p-2 h-28 border border-gray-200 rounded-lg bg-gray-50 cursor-not-allowed';
+                    calendarGrid.appendChild(emptyCell);
+                }
+
+                const today = new Date();
+                // Format today's date to YYYY-MM-DD string in local time for consistent comparison
+                const todayString = today.getFullYear() + '-' +
+                                    String(today.getMonth() + 1).padStart(2, '0') + '-' +
+                                    String(today.getDate()).padStart(2, '0');
+
+                for (let i = 1; i <= numDays; i++) {
+                    const date = new Date(year, month, i);
+                    // Format the date for the current cell to YYYY-MM-DD string in local time
+                    const dateString = date.getFullYear() + '-' +
+                                       String(date.getMonth() + 1).padStart(2, '0') + '-' +
+                                       String(date.getDate()).padStart(2, '0');
+
+                    const isUserHoliday = holidays.some(h => h.date === dateString);
+                    const isWeekend = (date.getDay() === 0 || date.getDay() === 6); // Sunday is 0, Saturday is 6
+                    const isHoliday = isUserHoliday || isWeekend;
+                    const isToday = dateString === todayString; // Corrected comparison
+                    const dayOfWeekName = getDayName(date);
+
+                    const cell = document.createElement('div');
+                    cell.className = `
+                        p-2 h-28 border rounded-lg flex flex-col items-center justify-between cursor-pointer
+                        bg-white hover:bg-gray-100 transition-colors
+                        ${isToday ? 'border-2 border-[#4CAF50] bg-green-50' : ''}
+                        ${isHoliday ? 'bg-red-100 text-red-800 border-red-300' : ''}
+                        ${isToday && isHoliday ? 'border-2 border-[#4CAF50] bg-gradient-to-br from-green-50 to-red-100' : ''}
+                    `;
+                    cell.dataset.date = dateString;
+
+                    cell.innerHTML = `
+                        <span class="font-semibold text-lg ${isHoliday ? 'text-red-800' : 'text-gray-900'}">
+                            ${i}
+                        </span>
+                        ${isHoliday ? `<span class="text-xs font-medium text-red-600">${isUserHoliday ? 'Holiday!' : 'Weekend'}</span>` : ''}
+                        ${!isHoliday ? `
+                            <div class="text-xs text-gray-600 text-center mt-1 space-y-0.5">
+                                ${weeklySchedule[dayOfWeekName] && weeklySchedule[dayOfWeekName].length > 0 ? `<p class="line-clamp-1">${weeklySchedule[dayOfWeekName].length} regular classes</p>` : ''}
+                                ${extraClasses.filter(ec => ec.date === dateString).length > 0 ? `<p class="line-clamp-1">${extraClasses.filter(ec => ec.date === dateString).length} extra classes</p>` : ''}
+                            </div>
+                        ` : ''}
+                    `;
+
+                    cell.addEventListener('click', (e) => {
+                        handleDayClick(date, dateString);
+                    });
+                    calendarGrid.appendChild(cell);
+                }
+            }
+
+            function handleDayClick(date, dateString) {
+                const dayOfWeek = getDayName(date);
+                const dailyClasses = [];
+
+                if (weeklySchedule[dayOfWeek]) {
+                    dailyClasses.push(...weeklySchedule[dayOfWeek].map(c => ({
+                        type: 'weekly',
+                        ...c
+                    })));
+                }
+
+                const classesForDate = extraClasses.filter(ec => ec.date === dateString);
+                dailyClasses.push(...classesForDate.map(c => ({
+                    type: 'extra',
+                    ...c
+                })));
+
+                dailyClasses.sort((a, b) => a.startTime.localeCompare(b.startTime));
+
+                renderDayDetailModal(date, dateString, dailyClasses);
+            }
+
+            function renderDayDetailModal(date, dateString, dailyClasses) {
+                const modalContent = document.createElement('div');
+                modalContent.className = 'space-y-3';
+
+                if (dailyClasses.length === 0) {
+                    modalContent.innerHTML = '<p class="text-gray-600">No classes scheduled for this day.</p>';
+                } else {
+                    dailyClasses.forEach((classItem) => {
+                        const currentStatus = getAttendanceStatus(classItem.subjectId, dateString, classItem.startTime);
+                        const subject = subjects.find(s => s.id === classItem.subjectId);
+
+                        const classDiv = document.createElement('div');
+                        classDiv.className = 'bg-green-50 p-3 rounded-lg border border-green-200 flex flex-col sm:flex-row justify-between items-center gap-2';
+                        classDiv.innerHTML = `
+                            <div class="text-center sm:text-left">
+                                <p class="font-semibold text-green-800 text-lg">${getSubjectName(classItem.subjectId)}</p>
+                                <p class="text-sm text-gray-700">
+                                    ${classItem.startTime} - ${calculateEndTime(classItem.startTime)}
+                                </p>
+                                <span class="text-xs italic font-medium
+                                    ${currentStatus === 'present' ? 'text-green-600' :
+                                    currentStatus === 'absent' ? 'text-red-600' :
+                                    currentStatus === 'cancelled' ? 'text-orange-600' : 'text-gray-500'}">
+                                    ${currentStatus === 'present' ? 'Marked Present' :
+                                    currentStatus === 'absent' ? 'Marked Absent' :
+                                    currentStatus === 'cancelled' ? 'Class Cancelled' :
+                                    'Unmarked'}
+                                </span>
+                            </div>
+                            <div class="flex flex-wrap justify-center sm:justify-end gap-2 mt-2 sm:mt-0">
+                                <button data-subject-id="${classItem.subjectId}" data-start-time="${classItem.startTime}" data-date="${dateString}" data-action="present" class="attendance-btn bg-green-500 hover:bg-green-600 text-white text-sm py-1.5 px-3 rounded-lg shadow-sm transition-all duration-200 ease-in-out hover:scale-105">
+                                    Present
+                                </button>
+                                <button data-subject-id="${classItem.subjectId}" data-start-time="${classItem.startTime}" data-date="${dateString}" data-action="absent" class="attendance-btn bg-red-500 hover:bg-red-600 text-white text-sm py-1.5 px-3 rounded-lg shadow-sm transition-all duration-200 ease-in-out hover:scale-105">
+                                    Absent
+                                </button>
+                                <button data-subject-id="${classItem.subjectId}" data-start-time="${classItem.startTime}" data-date="${dateString}" data-action="cancelled" class="attendance-btn bg-orange-500 hover:bg-orange-600 text-white text-sm py-1.5 px-3 rounded-lg shadow-sm transition-all duration-200 ease-in-out hover:scale-105">
+                                    Cancel
+                                </button>
+                            </div>
+                            ${subject ? `
+                                <button data-subject-id="${subject.id}" class="view-attendance-btn mt-2 text-[#4CAF50] hover:underline text-sm sm:self-end">
+                                    View Subject Attendance
+                                </button>
+                            ` : ''}
+                        `;
+                        modalContent.appendChild(classDiv);
+                    });
+                }
+
+                openModal(`Schedule for ${date.toDateString()}`, modalContent, () => {
+                    updateCalendar();
+                });
+
+                modalContent.querySelectorAll('.attendance-btn').forEach(button => {
+                    button.addEventListener('click', async (e) => {
+                        const status = e.currentTarget.dataset.action;
+                        const subjectId = e.currentTarget.dataset.subjectId;
+                        const startTime = e.currentTarget.dataset.startTime;
+                        const classDateString = e.currentTarget.dataset.date;
+
+                        const classItemToMark = dailyClasses.find(item =>
+                            item.subjectId === subjectId &&
+                            item.startTime === startTime
+                        );
+
+                        if (classItemToMark) {
+                            await handleAttendanceMark(classItemToMark, classDateString, status);
+                            renderDayDetailModal(date, dateString, dailyClasses);
+                        } else {
+                            console.error("Could not find class item to mark attendance for using data attributes.");
+                            showToast("Error: Could not identify class for attendance.", "error");
+                        }
+                    });
+                });
+
+                modalContent.querySelectorAll('.view-attendance-btn').forEach(button => {
+                    button.addEventListener('click', (e) => {
+                        const subjectId = e.currentTarget.dataset.subjectId;
+                        const subjectToView = subjects.find(s => s.id === subjectId);
+                        if (subjectToView) {
+                            renderAttendanceSummaryModal(subjectToView);
+                        }
+                    });
+                });
+            }
+
+            async function handleAttendanceMark(classItem, dateString, status) {
+                try {
+                    const existingRecord = attendanceRecords.find(rec =>
+                        rec.subjectId === classItem.subjectId &&
+                        rec.date === dateString &&
+                        rec.startTime === classItem.startTime
+                    );
+
+                    if (status === 'cancelled') {
+                        if (existingRecord) {
+                            await deleteItemFromFirebase('attendanceRecords', existingRecord.id);
+                            showToast("Class marked as cancelled and attendance cleared.", "info");
+                        } else {
+                            showToast("No attendance record to clear for this class.", "info");
+                        }
+                    } else {
+                        const attendanceData = {
+                            subjectId: classItem.subjectId,
+                            date: dateString,
+                            startTime: classItem.startTime,
+                            status: status,
+                            logTimestamp: new Date().toISOString()
+                        };
+
+                        if (existingRecord) {
+                            await updateItemInFirebase('attendanceRecords', existingRecord.id, attendanceData);
+                            showToast(`Attendance updated to '${status}'.`, "success");
+                        } else {
+                            await addItemToFirebase('attendanceRecords', attendanceData);
+                            showToast(`Attendance marked as '${status}'.`, "success");
+                        }
+                    }
+                } catch (error) {
+                    // Toast handled by Firebase functions
+                }
+            }
+
+
+            function renderAttendanceSummaryModal(subject) {
+                const modalContent = document.createElement('div');
+                modalContent.className = 'text-center p-4';
+
+                const recordsForSubject = attendanceRecords.filter(rec => rec.subjectId === subject.id);
+                const totalClasses = recordsForSubject.filter(rec => rec.status === 'present' || rec.status === 'absent').length;
+                const attendedClasses = recordsForSubject.filter(rec => rec.status === 'present').length;
+
+                modalContent.innerHTML = `
+                    <p class="text-lg mb-2">Total Classes: <span class="font-bold">${totalClasses}</span></p>
+                    <p class="text-lg mb-4">Attended Classes: <span class="font-bold">${attendedClasses}</span></p>
+                    <p class="text-2xl font-bold text-[#4CAF50]">
+                        Percentage: ${calculatePercentage(attendedClasses, totalClasses)}
+                    </p>
+                `;
+                openModal(`${subject.name} Attendance`, modalContent);
+            }
+
+            updateCalendar();
+        }
+
+    </script>
+</body>
+</html>

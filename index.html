@@ -95,7 +95,7 @@
     </div>
 
     <div id="app" class="max-w-7xl mx-auto hidden">
-        </div>
+    </div>
 
     <div id="toastContainer" class="fixed bottom-4 right-4 z-[100] space-y-2"></div>
 
@@ -632,8 +632,11 @@
                 subjectsListDiv.innerHTML = '';
                 subjects.forEach(subject => {
                     const recordsForSubject = attendanceRecords.filter(rec => rec.subjectId === subject.id);
-                    const totalClasses = recordsForSubject.filter(rec => rec.status === 'present' || rec.status === 'absent').length;
-                    const attendedClasses = recordsForSubject.filter(rec => rec.status === 'present').length;
+                    const presentCount = recordsForSubject.filter(rec => rec.status === 'present').length;
+                    const absentCount = recordsForSubject.filter(rec => rec.status === 'absent').length;
+                    const cancelledCount = recordsForSubject.filter(rec => rec.status === 'cancelled').length;
+                    const totalClasses = presentCount + absentCount;
+                    const attendedClasses = presentCount;
 
                     const subjectDiv = document.createElement('div');
                     subjectDiv.className = 'bg-gray-50 p-4 rounded-lg shadow-sm border border-gray-200';
@@ -649,8 +652,11 @@
                                 </button>
                             </div>
                         </div>
-                        <p class="text-sm text-gray-600">Total Classes: <span class="font-medium">${totalClasses}</span></p>
-                        <p class="text-sm text-gray-600">Attended: <span class="font-medium">${attendedClasses}</span></p>
+                        <div class="text-sm text-gray-600 mt-2 space-y-1">
+                            <p><strong>Present:</strong> ${presentCount}</p>
+                            <p><strong>Absent:</strong> ${absentCount}</p>
+                            <p><strong>Cancelled:</strong> ${cancelledCount}</p>
+                        </div>
                         <p class="text-md font-bold mt-2 text-gray-700">Attendance: ${calculatePercentage(attendedClasses, totalClasses)}</p>
                     `;
                     subjectsListDiv.appendChild(subjectDiv);
@@ -1147,6 +1153,41 @@
                 return (day === 0) ? 6 : day - 1; // Convert Sunday(0) to 6, Monday(1) to 0, etc.
             }
 
+            // --- NEW FUNCTION: Determine overall status for a day ---
+            function getOverallDayStatus(dateString) {
+                const date = new Date(dateString);
+                const dayOfWeek = getDayName(date);
+                
+                // Combine weekly and extra classes for the day
+                const dailyClasses = [];
+                if (weeklySchedule[dayOfWeek]) {
+                    dailyClasses.push(...weeklySchedule[dayOfWeek]);
+                }
+                dailyClasses.push(...extraClasses.filter(ec => ec.date === dateString));
+
+                // If there are no scheduled classes, there's no attendance to mark.
+                if (dailyClasses.length === 0) {
+                    return 'no-classes';
+                }
+
+                const attendanceStatuses = dailyClasses.map(classItem => 
+                    getAttendanceStatus(classItem.subjectId, dateString, classItem.startTime)
+                );
+                
+                const isAbsent = attendanceStatuses.some(status => status === 'absent');
+                const isUnmarked = attendanceStatuses.some(status => status === 'unmarked');
+                const isAllPresent = attendanceStatuses.every(status => status === 'present');
+                const isAllCancelled = attendanceStatuses.every(status => status === 'cancelled');
+                
+                if (isAbsent) return 'absent';
+                if (isAllPresent) return 'present';
+                if (isAllCancelled) return 'cancelled';
+                if (isUnmarked) return 'unmarked';
+                
+                return 'mixed-status';
+            }
+            // --- END NEW FUNCTION ---
+
             function updateCalendar() {
                 const year = currentMonth.getFullYear();
                 const month = currentMonth.getMonth();
@@ -1166,15 +1207,15 @@
                 const today = new Date();
                 // Format today's date to YYYY-MM-DD string in local time for consistent comparison
                 const todayString = today.getFullYear() + '-' +
-                                    String(today.getMonth() + 1).padStart(2, '0') + '-' +
-                                    String(today.getDate()).padStart(2, '0');
+                                        String(today.getMonth() + 1).padStart(2, '0') + '-' +
+                                        String(today.getDate()).padStart(2, '0');
 
                 for (let i = 1; i <= numDays; i++) {
                     const date = new Date(year, month, i);
                     // Format the date for the current cell to YYYY-MM-DD string in local time
                     const dateString = date.getFullYear() + '-' +
-                                       String(date.getMonth() + 1).padStart(2, '0') + '-' +
-                                       String(date.getDate()).padStart(2, '0');
+                                        String(date.getMonth() + 1).padStart(2, '0') + '-' +
+                                        String(date.getDate()).padStart(2, '0');
 
                     const isUserHoliday = holidays.some(h => h.date === dateString);
                     const isWeekend = (date.getDay() === 0 || date.getDay() === 6); // Sunday is 0, Saturday is 6
@@ -1182,13 +1223,32 @@
                     const isToday = dateString === todayString; // Corrected comparison
                     const dayOfWeekName = getDayName(date);
 
+                    const overallStatus = getOverallDayStatus(dateString);
+
+                    let statusClasses = '';
+                    if (isToday) {
+                        statusClasses = 'bg-green-100 border-green-400 font-bold'; // Today's color
+                    } else if (isHoliday) {
+                        statusClasses = 'bg-red-100 text-red-800 border-red-300';
+                    } else if (overallStatus === 'present') {
+                        statusClasses = 'bg-green-100 text-green-800 border-green-300';
+                    } else if (overallStatus === 'absent') {
+                        statusClasses = 'bg-red-200 text-red-900 border-red-400';
+                    } else if (overallStatus === 'cancelled') {
+                        statusClasses = 'bg-orange-100 text-orange-800 border-orange-300';
+                    } else if (overallStatus === 'unmarked') {
+                         statusClasses = 'bg-gray-50 border-gray-200';
+                    } else { // Mixed status (some marked, some not)
+                        statusClasses = 'bg-yellow-100 text-yellow-800 border-yellow-300';
+                    }
+
+                    
                     const cell = document.createElement('div');
                     cell.className = `
                         p-2 h-28 border rounded-lg flex flex-col items-center justify-between cursor-pointer
-                        bg-white hover:bg-gray-100 transition-colors
-                        ${isToday ? 'border-2 border-[#4CAF50] bg-green-50' : ''}
-                        ${isHoliday ? 'bg-red-100 text-red-800 border-red-300' : ''}
-                        ${isToday && isHoliday ? 'border-2 border-[#4CAF50] bg-gradient-to-br from-green-50 to-red-100' : ''}
+                        transition-colors
+                        ${isToday ? 'border-2 border-[#4CAF50]' : ''}
+                        ${statusClasses}
                     `;
                     cell.dataset.date = dateString;
 
@@ -1197,17 +1257,21 @@
                             ${i}
                         </span>
                         ${isHoliday ? `<span class="text-xs font-medium text-red-600">${isUserHoliday ? 'Holiday!' : 'Weekend'}</span>` : ''}
-                        ${!isHoliday ? `
+                        ${!isHoliday && overallStatus !== 'no-classes' ? `
                             <div class="text-xs text-gray-600 text-center mt-1 space-y-0.5">
                                 ${weeklySchedule[dayOfWeekName] && weeklySchedule[dayOfWeekName].length > 0 ? `<p class="line-clamp-1">${weeklySchedule[dayOfWeekName].length} regular classes</p>` : ''}
                                 ${extraClasses.filter(ec => ec.date === dateString).length > 0 ? `<p class="line-clamp-1">${extraClasses.filter(ec => ec.date === dateString).length} extra classes</p>` : ''}
                             </div>
                         ` : ''}
                     `;
-
-                    cell.addEventListener('click', (e) => {
-                        handleDayClick(date, dateString);
-                    });
+                    
+                    if (!isHoliday && overallStatus !== 'no-classes' && !isWeekend) {
+                        cell.addEventListener('click', (e) => {
+                            handleDayClick(date, dateString);
+                        });
+                    } else {
+                         cell.classList.add('cursor-not-allowed');
+                    }
                     calendarGrid.appendChild(cell);
                 }
             }
@@ -1238,29 +1302,75 @@
                 const modalContent = document.createElement('div');
                 modalContent.className = 'space-y-3';
 
+                const presentCount = dailyClasses.filter(c => getAttendanceStatus(c.subjectId, dateString, c.startTime) === 'present').length;
+                const absentCount = dailyClasses.filter(c => getAttendanceStatus(c.subjectId, dateString, c.startTime) === 'absent').length;
+                const cancelledCount = dailyClasses.filter(c => getAttendanceStatus(c.subjectId, dateString, c.startTime) === 'cancelled').length;
+                const unmarkedCount = dailyClasses.length - presentCount - absentCount - cancelledCount;
+
+                const attendanceSummaryHtml = `
+                    <div class="flex flex-wrap justify-center gap-4 text-center text-sm font-medium mb-4 p-3 bg-gray-100 rounded-lg">
+                        <div class="flex items-center space-x-1">
+                            <span class="bg-green-500 rounded-full w-3 h-3 block"></span>
+                            <span>Present: <span class="font-bold">${presentCount}</span></span>
+                        </div>
+                        <div class="flex items-center space-x-1">
+                            <span class="bg-red-500 rounded-full w-3 h-3 block"></span>
+                            <span>Absent: <span class="font-bold">${absentCount}</span></span>
+                        </div>
+                        <div class="flex items-center space-x-1">
+                            <span class="bg-orange-500 rounded-full w-3 h-3 block"></span>
+                            <span>Cancelled: <span class="font-bold">${cancelledCount}</span></span>
+                        </div>
+                        <div class="flex items-center space-x-1">
+                            <span class="bg-gray-300 rounded-full w-3 h-3 block"></span>
+                            <span>Unmarked: <span class="font-bold">${unmarkedCount}</span></span>
+                        </div>
+                    </div>
+                `;
+                const summaryDiv = document.createElement('div');
+                summaryDiv.innerHTML = attendanceSummaryHtml;
+                modalContent.appendChild(summaryDiv);
+
                 if (dailyClasses.length === 0) {
-                    modalContent.innerHTML = '<p class="text-gray-600">No classes scheduled for this day.</p>';
+                    modalContent.innerHTML += '<p class="text-gray-600">No classes scheduled for this day.</p>';
                 } else {
                     dailyClasses.forEach((classItem) => {
                         const currentStatus = getAttendanceStatus(classItem.subjectId, dateString, classItem.startTime);
+
+                        let classStatusClasses = '';
+                        switch (currentStatus) {
+                            case 'present':
+                                classStatusClasses = 'bg-green-100 border-green-300 text-green-800';
+                                break;
+                            case 'absent':
+                                classStatusClasses = 'bg-red-100 border-red-300 text-red-800';
+                                break;
+                            case 'cancelled':
+                                classStatusClasses = 'bg-orange-100 border-orange-300 text-orange-800';
+                                break;
+                            default:
+                                classStatusClasses = 'bg-white border-gray-200 text-gray-900';
+                                break;
+                        }
+
                         const subject = subjects.find(s => s.id === classItem.subjectId);
 
                         const classDiv = document.createElement('div');
-                        classDiv.className = 'bg-green-50 p-3 rounded-lg border border-green-200 flex flex-col sm:flex-row justify-between items-center gap-2';
+                        classDiv.className = `p-3 rounded-lg border flex flex-col sm:flex-row justify-between items-center gap-2 ${classStatusClasses}`;
                         classDiv.innerHTML = `
                             <div class="text-center sm:text-left">
-                                <p class="font-semibold text-green-800 text-lg">${getSubjectName(classItem.subjectId)}</p>
-                                <p class="text-sm text-gray-700">
+                                <p class="font-semibold text-lg">${getSubjectName(classItem.subjectId)}</p>
+                                <p class="text-sm">
                                     ${classItem.startTime} - ${calculateEndTime(classItem.startTime)}
                                 </p>
                                 <span class="text-xs italic font-medium
                                     ${currentStatus === 'present' ? 'text-green-600' :
-                                    currentStatus === 'absent' ? 'text-red-600' :
-                                    currentStatus === 'cancelled' ? 'text-orange-600' : 'text-gray-500'}">
+                                      currentStatus === 'absent' ? 'text-red-600' :
+                                      currentStatus === 'cancelled' ? 'text-orange-600' : 'text-gray-500'}">
                                     ${currentStatus === 'present' ? 'Marked Present' :
-                                    currentStatus === 'absent' ? 'Marked Absent' :
-                                    currentStatus === 'cancelled' ? 'Class Cancelled' :
-                                    'Unmarked'}
+                                      currentStatus === 'absent' ? 'Marked Absent' :
+                                      currentStatus === 'cancelled' ? 'Class Cancelled' :
+                                      'Unmarked'}
                                 </span>
                             </div>
                             <div class="flex flex-wrap justify-center sm:justify-end gap-2 mt-2 sm:mt-0">
@@ -1272,6 +1382,9 @@
                                 </button>
                                 <button data-subject-id="${classItem.subjectId}" data-start-time="${classItem.startTime}" data-date="${dateString}" data-action="cancelled" class="attendance-btn bg-orange-500 hover:bg-orange-600 text-white text-sm py-1.5 px-3 rounded-lg shadow-sm transition-all duration-200 ease-in-out hover:scale-105">
                                     Cancel
+                                </button>
+                                <button data-subject-id="${classItem.subjectId}" data-start-time="${classItem.startTime}" data-date="${dateString}" data-action="clear" class="attendance-btn bg-gray-500 hover:bg-gray-600 text-white text-sm py-1.5 px-3 rounded-lg shadow-sm transition-all duration-200 ease-in-out hover:scale-105">
+                                    Clear
                                 </button>
                             </div>
                             ${subject ? `
@@ -1329,14 +1442,33 @@
                         rec.startTime === classItem.startTime
                     );
 
-                    if (status === 'cancelled') {
+                    if (status === 'clear') {
                         if (existingRecord) {
                             await deleteItemFromFirebase('attendanceRecords', existingRecord.id);
-                            showToast("Class marked as cancelled and attendance cleared.", "info");
+                            showToast("Attendance record cleared.", "info");
                         } else {
                             showToast("No attendance record to clear for this class.", "info");
                         }
-                    } else {
+                    }
+                    else if (status === 'cancelled') {
+                        if (existingRecord) {
+                            await updateItemInFirebase('attendanceRecords', existingRecord.id, {
+                                ...existingRecord,
+                                status: 'cancelled'
+                            });
+                            showToast("Class marked as cancelled.", "info");
+                        } else {
+                            await addItemToFirebase('attendanceRecords', {
+                                subjectId: classItem.subjectId,
+                                date: dateString,
+                                startTime: classItem.startTime,
+                                status: 'cancelled',
+                                logTimestamp: new Date().toISOString()
+                            });
+                            showToast("Class marked as cancelled.", "info");
+                        }
+                    }
+                    else {
                         const attendanceData = {
                             subjectId: classItem.subjectId,
                             date: dateString,
@@ -1357,7 +1489,6 @@
                     // Toast handled by Firebase functions
                 }
             }
-
 
             function renderAttendanceSummaryModal(subject) {
                 const modalContent = document.createElement('div');
